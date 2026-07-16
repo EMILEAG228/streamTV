@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>StreamShare RED - Black & Red Pro</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@600;700;800;900&family=JetBrains+Mono:wght@600&display=swap" rel="stylesheet">
+<style>
+*{font-family:Inter} .mono{font-family:'JetBrains Mono',monospace}
+@keyframes pulseRed{0%,100%{box-shadow:0 0 0 0 rgba(220,38,38,.7)}50%{box-shadow:0 0 0 18px rgba(220,38,38,0)}}
+@keyframes beam{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
+@keyframes shimmer{0%{transform:translateX(-100%)}100%{transform:translateX(200%)}}
+@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+.scanline::after{content:'';position:absolute;inset:0;background:repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(255,0,0,.04) 2px, rgba(255,0,0,.04) 3px);pointer-events:none;z-index:2}
+.grain::before{content:'';position:absolute;inset:0;background-image:url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iMzAwIj48ZmlsdGVyIGlkPSJhIj48ZmVUdXJidWxlbmNlIHR5cGU9ImZyYWN0YWxOb2lzZSIgYmFzZUZyZXF1ZW5jeT0iLjc1IiBzdGl0Y2hUaWxlcz0ic3RpdGNoIi8+PC9maWx0ZXI+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsdGVyPSJ1cmwoI2EpIiBvcGFjaXR5PSIuMDUiLz48L3N2Zz4=');opacity:.4;pointer-events:none;z-index:1}
+</style>
+</head>
+<body class="bg-[#050508] text-white min-h-screen overflow-x-hidden">
+<div id="bg" class="fixed inset-0 pointer-events-none">
+ <div class="absolute -top-[15%] left-[10%] w-[60%] h-[50%] bg-[#dc2626]/20 rounded-full blur-[130px]"></div>
+ <div class="absolute -bottom-[10%] right-[5%] w-[45%] h-[45%] bg-[#991b1b]/15 rounded-full blur-[120px]"></div>
+</div>
+<div id="app" class="relative z-10"></div>
+<canvas id="canvas" class="hidden"></canvas>
+<script type="module">
+import Peer from 'https://esm.sh/peerjs@1.5.2?bundle'
+
+const genId=()=>{let c='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',s='';for(let i=0;i<6;i++) s+=c[Math.floor(Math.random()*c.length)];return s}
+const Q={ '360p':{w:640,h:360,label:'360p'}, '480p':{w:854,h:480,label:'480p'}, '720p':{w:1280,h:720,label:'720p HD'}, '1080p':{w:1920,h:1080,label:'1080p FHD'}, '4K':{w:2560,h:1440,label:'4K'} }
+const ROOM=new URLSearchParams(location.search).get('id')?.toUpperCase()||''
+const isViewer=!!ROOM
+
+let state={
+ quality:'1080p', anim:true, overlay:'rouge', sys:true, mic:false,
+ status:'idle', error:'', roomId:'', viewers:[], logoSrc:null, logoSize:'M', logoShape:'round', logoOpacity:85,
+ watermark:'',
+ // viewer
+ vQuality:'Auto', vMuted:false, vVol:1, remoteStream:null, vStatus: isViewer?'connecting':'idle', vRes:{w:0,h:0}
+}
+let refs={ preview:null, remote:null, viewerBox:null, display:null, final:null, peer:null, calls:new Map(), audioCtx:null, logoImg:null, canvas:document.getElementById('canvas'), raf:0 }
+
+function render(){
+ const app=document.getElementById('app')
+ app.innerHTML = isViewer ? renderViewer() : renderBroadcaster()
+ cache(); bind()
+ requestAnimationFrame(()=>setTimeout(()=>{
+   if(!isViewer && refs.display && refs.preview){ refs.preview.srcObject=refs.display; refs.preview.muted=true; refs.preview.play().catch(()=>{}); console.log('preview re-attached') }
+   if(isViewer && state.remoteStream && refs.remote){ refs.remote.srcObject=state.remoteStream; refs.remote.play().catch(()=>{}) }
+ }, 80))
+}
+
+function renderBroadcaster(){
+ const url=state.roomId?`${location.origin}${location.pathname}?id=${state.roomId}`:''
+ return `
+ <div class="min-h-screen flex flex-col">
+  <header class="sticky top-0 z-30 h-[70px] border-b border-red-500/10 bg-black/60 backdrop-blur-2xl flex items-center justify-between px-6">
+   <div class="flex items-center gap-3"><div class="w-10 h-10 rounded-[12px] bg-gradient-to-br from-red-600 to-[#7f1d1d] grid place-items-center shadow-[0_0_24px_rgba(220,38,38,.5)] font-black">R</div><div><div class="font-black text-[16px] tracking-tight">STREAMSHARE <span class="text-red-500">RED</span></div><div class="text-[10px] tracking-[0.2em] text-white/30 font-bold -mt-1">BLACK • RED • PRO</div></div><span class="ml-4 hidden md:flex px-3 h-7 rounded-full bg-red-500/10 border border-red-500/20 text-red-200 text-[10px] font-bold tracking-widest">BROADCAST • INDEX.HTML</span></div>
+   ${state.status==='live'?`<div class="flex items-center gap-2"><span class="px-3 h-8 rounded-full bg-red-600 text-white text-xs font-bold flex items-center gap-2" style="animation:pulseRed 1.5s infinite"><span class="w-2 h-2 bg-white rounded-full"></span>LIVE • ${state.viewers.length}</span><span class="hidden md:flex h-8 px-3 rounded-full bg-white/5 border border-white/10 text-xs mono">${state.roomId}</span></div>`:''}
+  </header>
+
+  <main class="max-w-[1440px] mx-auto w-full p-6 flex-1">
+  ${state.status!=='live'?`
+   <div class="max-w-[1080px] mx-auto">
+    <div class="text-center mt-8 mb-10"><h1 class="text-[48px] md:text-[64px] font-black leading-[0.85] tracking-[-0.03em]">DIFFUSE EN<br><span class="bg-gradient-to-r from-red-500 via-red-400 to-[#7f1d1d] bg-clip-text text-transparent">NOIR & ROUGE.</span></h1><p class="text-white/40 mt-4 max-w-[520px] mx-auto">Canvas brûlé avec logo, son système + micro mixé, 60 FPS. P2P direct.</p></div>
+    
+    <div class="grid lg:grid-cols-[1.2fr_0.8fr] gap-5">
+     <div class="rounded-[24px] border border-red-500/15 bg-white/[0.04] backdrop-blur-xl p-5">
+      <div class="flex items-center justify-between mb-4"><span class="text-[12px] font-bold tracking-widest text-white/30">QUALITÉ</span><span class="text-[11px] text-red-300">RECOMMANDÉ 1080p</span></div>
+      <div class="flex flex-wrap gap-2 mb-6">${Object.keys(Q).map(k=>`<button data-q="${k}" class="qbtn h-9 px-4 rounded-full border text-xs font-bold transition ${state.quality===k?'bg-red-600 border-red-500 text-white shadow-[0_0_20px_rgba(220,38,38,.5)]':'bg-black/50 border-white/10 text-white/50 hover:text-white'}">${Q[k].label}</button>`).join('')}</div>
+
+      <div class="grid grid-cols-2 gap-3 mb-4">
+       <label class="flex h-12 items-center gap-2 px-4 rounded-xl bg-black/60 border border-white/10 cursor-pointer hover:border-red-500/20"><input id="sys" type="checkbox" ${state.sys?'checked':''} class="accent-red-600"><span class="text-sm">🔊 Son système</span></label>
+       <label class="flex h-12 items-center gap-2 px-4 rounded-xl bg-black/60 border border-white/10 cursor-pointer hover:border-red-500/20"><input id="mic" type="checkbox" ${state.mic?'checked':''} class="accent-red-600"><span class="text-sm">🎙️ Micro mixé</span></label>
+      </div>
+
+      <div class="rounded-xl bg-black/60 border border-white/10 p-4">
+       <div class="flex items-center justify-between mb-3"><span class="text-[11px] font-bold tracking-widest text-white/30">LOGO BAS DROITE</span><span class="text-[10px] text-white/20">Brûlé dans le flux via canvas</span></div>
+       <div class="flex gap-2 mb-3">
+        <label class="flex-1 h-11 rounded-xl bg-white/[0.06] border border-white/10 grid place-items-center cursor-pointer text-sm hover:bg-white/10"><input id="logoFile" type="file" accept="image/*" class="hidden">📁 Upload logo PNG</label>
+        ${state.logoSrc?`<button id="removeLogo" class="h-11 px-4 rounded-xl bg-red-500/15 border border-red-500/20 text-red-200 text-sm">✕ Retirer</button>`:''}
+       </div>
+       ${state.logoSrc?`
+        <div class="grid grid-cols-3 gap-2">
+         <div><label class="text-[10px] text-white/30">TAILLE</label><div class="flex gap-1 mt-1">${['S','M','L'].map(s=>`<button data-ls="${s}" class="lsbtn flex-1 h-8 rounded-full border text-xs ${state.logoSize===s?'bg-red-600 border-red-500 text-white':'bg-white/5 border-white/10'}">${s}</button>`).join('')}</div></div>
+         <div><label class="text-[10px] text-white/30">FORME</label><div class="flex gap-1 mt-1"><button data-shape="round" class="shapebtn flex-1 h-8 rounded-full border text-xs ${state.logoShape==='round'?'bg-red-600 border-red-500':'bg-white/5 border-white/10'}">Ronde</button><button data-shape="square" class="shapebtn flex-1 h-8 rounded-full border text-xs ${state.logoShape==='square'?'bg-red-600 border-red-500':'bg-white/5 border-white/10'}">Carrée</button></div></div>
+         <div><label class="text-[10px] text-white/30">OPACITÉ ${state.logoOpacity}%</label><input id="opac" type="range" min="30" max="100" value="${state.logoOpacity}" class="w-full accent-red-600 mt-1"></div>
+        </div>
+        <div class="mt-3 rounded-lg bg-black/80 border border-white/5 p-2 flex items-center gap-3"><img src="${state.logoSrc}" class="w-10 h-10 object-contain rounded ${state.logoShape==='round'?'rounded-full':''} bg-white/10"><span class="text-xs text-white/50 mono">Sera incrusté en bas droite, ${state.logoSize} • ${state.logoShape}</span></div>
+       `:''}
+      </div>
+
+      <button id="start" class="mt-6 w-full h-[58px] rounded-full bg-gradient-to-br from-red-600 to-[#7f1d1d] font-bold text-[15px] shadow-[0_0_40px_rgba(220,38,38,.5)] hover:shadow-[0_0_60px_rgba(220,38,38,.7)] transition flex items-center justify-center gap-2">${state.status==='requesting'?'⏳ Préparation...':'🔴 Lancer la diffusion Noir/Rouge'}</button>
+      ${state.error?`<div class="mt-3 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-200">${state.error}</div>`:''}
+     </div>
+
+     <div class="space-y-4">
+      <div class="rounded-[20px] border border-red-500/15 bg-[#0d0d12]/80 p-5 backdrop-blur-xl">
+       <div class="flex items-center gap-2 mb-3"><div class="w-7 h-7 rounded-lg bg-red-500/15 border border-red-500/20 grid place-items-center">🎨</div><span class="font-bold text-sm">Style & Animation</span></div>
+       <div class="space-y-3">
+        <label class="flex items-center justify-between p-3 rounded-xl bg-black/50 border border-white/5"><span class="text-sm">Animations luxe</span><input id="anim" type="checkbox" ${state.anim?'checked':''} class="accent-red-600 w-5 h-5"></label>
+        <div><label class="text-[10px] text-white/30 font-bold tracking-widest">OVERLAY COULEUR</label><div class="flex gap-2 mt-2">${['noir','rouge','neon'].map(c=>`<button data-overlay="${c}" class="ovbtn flex-1 h-10 rounded-xl border text-xs font-bold capitalize ${state.overlay===c?'bg-red-600 border-red-500 text-white':'bg-black/50 border-white/10 text-white/40'}">${c}</button>`).join('')}</div></div>
+        <div><label class="text-[10px] text-white/30 font-bold tracking-widest">WATERMARK TEXTE</label><input id="wm" value="${state.watermark}" placeholder="Ex: LIVE RED" class="mt-2 w-full h-11 rounded-xl bg-black/60 border border-white/10 px-4 text-sm"></div>
+       </div>
+      </div>
+      <div class="rounded-[16px] bg-red-500/10 border border-red-500/20 p-3 text-[11px] text-red-200/70">✅ Son système va marcher: coche "Partager l'audio" dans popup Chrome. Mix micro via AudioContext. Logo brûlé via canvas.captureStream(30) à 30 FPS.</div>
+     </div>
+    </div>
+   </div>
+  `:`
+   <div class="grid lg:grid-cols-[1.6fr_0.9fr] gap-5">
+    <div class="relative rounded-[28px] overflow-hidden border-2 ${state.anim?'border-red-500/30 shadow-[0_0_80px_rgba(220,38,38,.25)]':'border-white/10'} bg-black ${state.anim?'scanline grain':''}">
+     ${state.anim?`<div class="absolute inset-0 rounded-[28px] pointer-events-none z-10" style="background:conic-gradient(from 0deg, transparent, #dc2626, transparent); animation:beam 3s linear infinite; mask:linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0); mask-composite: exclude; padding:2px; opacity:.6"></div>`:''}
+     <div class="h-[54px] px-5 flex items-center justify-between border-b border-white/5 bg-black/80 relative z-20"><div class="flex items-center gap-2 text-sm font-bold"><span class="w-2.5 h-2.5 bg-red-500 rounded-full pulse"></span>LIVE RED • ${state.quality} • ${Q[state.quality].w}x${Q[state.quality].h}</div><div class="flex items-center gap-2"><select id="liveQ" class="h-7 rounded-full bg-white/10 border border-white/10 text-xs px-2">${Object.keys(Q).map(k=>`<option value="${k}" ${state.quality===k?'selected':''}>${k}</option>`).join('')}</select><span class="w-2 h-2 bg-emerald-400 rounded-full animate-pulse"></span></div></div>
+     <div class="aspect-video bg-black relative">
+      <video id="preview" autoplay muted playsinline class="w-full h-full object-contain bg-black relative z-0"></video>
+      ${state.logoSrc?`<div class="absolute bottom-5 right-5 z-20 pointer-events-none"><img src="${state.logoSrc}" class="object-contain bg-black/20 backdrop-blur border border-red-500/20 ${state.logoShape==='round'?'rounded-full':''} shadow-[0_0_20px_rgba(220,38,38,.5)]" style="width:${state.logoSize==='S'?56:state.logoSize==='M'?80:112}px; height:${state.logoSize==='S'?56:state.logoSize==='M'?80:112}px; opacity:${state.logoOpacity/100}"></div>`:''}
+      <div class="absolute bottom-3 left-3 z-20 px-3 py-1 rounded-full bg-red-600 text-white text-[11px] font-bold shadow-lg">● REC • RED</div>
+      <div class="absolute top-3 left-3 z-20 px-2.5 py-1 rounded-full bg-black/70 border border-white/10 text-[10px] mono">CANVAS BURN • ${state.sys?'🔊':''}${state.mic?'🎙️':''} • ${state.logoSrc?'LOGO ON':''}</div>
+     </div>
+    </div>
+    <div class="space-y-4">
+     <div class="rounded-[24px] border border-red-500/20 bg-[#0d0d12]/90 p-5 backdrop-blur-xl">
+      <h3 class="font-bold mb-4 flex items-center gap-2">⚡ Lien de partage</h3>
+      <div class="rounded-xl bg-black/60 border border-white/10 p-4"><div class="text-[10px] tracking-widest text-white/30 font-bold">ROOM ID</div><div class="mono text-[26px] font-black tracking-[0.18em] text-red-400">${state.roomId}</div></div>
+      <div class="mt-3 h-12 rounded-xl bg-[#121216] border border-red-500/10 flex items-center px-3 gap-2"><div class="mono flex-1 truncate text-[11px] text-white/50">${url}</div><button id="copyLink" class="h-8 px-4 rounded-lg bg-red-600 text-white text-xs font-bold">Copier</button></div>
+      <div class="mt-3 grid grid-cols-2 gap-2"><button id="copyId" class="h-10 rounded-xl bg-white/5 border border-white/10 text-sm">📋 ID</button><button id="stop" class="h-10 rounded-xl bg-red-600 text-white text-sm font-bold">⏹️ Stop</button></div>
+      <div class="mt-4 text-xs text-white/30">${state.viewers.length} viewer(s) connectés • Audio ${state.sys?'ON':''} ${state.mic?' + Mic':''}</div>
+     </div>
+    </div>
+   </div>
+  `}
+  </main>
+ </div>`
+
+}
+function renderViewer(){
+ return `
+ <div class="min-h-screen flex flex-col">
+  <header class="h-[64px] border-b border-red-500/10 bg-black/60 backdrop-blur-xl flex items-center justify-between px-6">
+   <div class="flex items-center gap-3"><div class="w-9 h-9 rounded-xl bg-gradient-to-br from-[#7f1d1d] to-red-600 grid place-items-center font-black">V</div><b>VIEW <span class="text-red-500">RED</span></b><span class="ml-2 px-2.5 py-1 rounded-full bg-red-500/10 border border-red-500/20 text-[10px] font-bold">DARK RED</span><span class="ml-2 hidden md:flex mono text-xs text-white/30">ID ${ROOM}</span></div>
+   <span class="px-3 py-1.5 rounded-full bg-white/5 border border-white/10 text-xs">${state.vStatus}</span>
+  </header>
+  <main class="max-w-[1440px] mx-auto w-full p-6">
+   <div id="viewerBox" class="relative rounded-[28px] overflow-hidden border-2 border-red-500/20 bg-black aspect-video lg:h-[72vh] shadow-[0_0_100px_rgba(220,38,38,.15)] ${state.anim?'scanline':''}">
+    ${state.vStatus!=='connected'?`<div class="absolute inset-0 z-20 grid place-items-center bg-[#050508]"><div class="text-center"><div class="w-14 h-14 mx-auto rounded-full border-2 border-red-500/20 border-t-red-500 animate-spin"></div><p class="mt-4 font-bold">Connexion RED...</p><p class="text-xs text-white/30 mt-2">${state.vStatus} → ${ROOM}</p></div></div>`:''}
+    <video id="remote" autoplay playsinline class="w-full h-full object-contain bg-black"></video>
+    ${state.vStatus==='connected'?`
+     <div class="absolute top-4 left-4 z-20 flex gap-2"><span class="px-3 py-1.5 rounded-full bg-red-600 text-white text-[11px] font-bold flex items-center gap-1.5 shadow-lg"><span class="w-2 h-2 bg-white rounded-full pulse"></span>LIVE • DARK RED</span><span class="hidden md:flex px-3 py-1.5 rounded-full bg-black/60 border border-white/10 text-[11px]">LECTURE SEULE</span></div>
+     <div class="absolute bottom-0 inset-x-0 z-20 p-4 bg-gradient-to-t from-black via-black/60 to-transparent">
+      <div class="flex items-center justify-between">
+       <div class="flex items-center gap-2">
+        <button id="mute" class="w-10 h-10 rounded-full bg-white/10 border border-white/10 grid place-items-center hover:bg-white/20">🔊</button>
+        <input id="vol" type="range" min="0" max="1" step="0.05" value="${state.vVol}" class="w-20 accent-red-600">
+        <span class="hidden md:flex px-2.5 py-1 rounded-full bg-black/60 border border-white/10 text-[11px] mono">${state.vRes.w?`${state.vRes.w}x${state.vRes.h}`:'...'}</span>
+       </div>
+       <div class="flex items-center gap-2">
+        <div class="hidden md:flex bg-black/60 border border-white/10 rounded-full p-1 gap-1">${['Auto','360p','720p','1080p','4K'].map(q=>`<button data-vq="${q}" class="vqbtn h-7 px-3 rounded-full text-[11px] font-bold border ${state.vQuality===q?'bg-red-600 border-red-500 text-white':'bg-white/5 border-white/10 text-white/50'}">${q}</button>`).join('')}</div>
+        <button id="fs" class="w-10 h-10 rounded-full bg-white/10 border border-white/10">⛶</button>
+        <button id="pip" class="w-10 h-10 rounded-full bg-white/10 border border-white/10">🖼️</button>
+       </div>
+      </div>
+      <div class="md:hidden mt-3 flex gap-1">${['Auto','360p','720p','1080p'].map(q=>`<button data-vq="${q}" class="vqbtn flex-1 h-8 rounded-full border text-[11px] font-bold ${state.vQuality===q?'bg-red-600 border-red-500 text-white':'bg-black/50 border-white/10 text-white/40'}">${q}</button>`).join('')}</div>
+     </div>
+    `:''}
+    <div class="absolute inset-0 pointer-events-none z-10 opacity-20" style="background:radial-gradient(circle at center, transparent 60%, rgba(220,38,38,.25) 100%)"></div>
+   </div>
+   <div class="mt-4 grid lg:grid-cols-3 gap-4">
+    <div class="lg:col-span-2 rounded-[20px] border border-red-500/10 bg-[#0d0d12]/80 p-4 flex items-center gap-3 text-[11px] mono"><span class="text-white/30">CODEC VP9 • P2P • LATENCE ~45ms • ROOM ${ROOM} • LOGO BURNED SI FOURNI</span><span class="ml-auto w-2 h-2 bg-red-500 rounded-full animate-pulse"></span></div>
+    <div class="rounded-[20px] border border-white/10 bg-white/[0.03] p-3 text-[11px] text-white/30">Astuce: passe en 360p pour économiser batterie, le flux source reste en ${state.vRes.w?state.vRes.w+'x'+state.vRes.h:'1080p'}.</div>
+   </div>
+  </main>
+ </div>`
+}
+
+function cache(){
+ refs.preview=document.getElementById('preview')
+ refs.remote=document.getElementById('remote')
+ refs.viewerBox=document.getElementById('viewerBox')
+ refs.canvas=document.getElementById('canvas')
+}
+function bind(){
+ document.querySelectorAll('.qbtn').forEach(b=>b.addEventListener('click', e=>{ state.quality=e.currentTarget.dataset.q; render() }))
+ document.getElementById('sys')?.addEventListener('change', e=>state.sys=e.target.checked)
+ document.getElementById('mic')?.addEventListener('change', e=>state.mic=e.target.checked)
+ document.getElementById('anim')?.addEventListener('change', e=>{ state.anim=e.target.checked; render() })
+ document.querySelectorAll('.ovbtn').forEach(b=>b.addEventListener('click', e=>{ state.overlay=e.currentTarget.dataset.overlay; render() }))
+ document.getElementById('wm')?.addEventListener('input', e=>state.watermark=e.target.value)
+ document.getElementById('logoFile')?.addEventListener('change', async e=>{
+   const file=e.target.files[0]; if(!file) return
+   const reader=new FileReader(); reader.onload=()=>{ state.logoSrc=reader.result; const img=new Image(); img.onload=()=>refs.logoImg=img; img.src=reader.result; render() }; reader.readAsDataURL(file)
+ })
+ document.getElementById('removeLogo')?.addEventListener('click', ()=>{ state.logoSrc=null; refs.logoImg=null; render() })
+ document.querySelectorAll('.lsbtn').forEach(b=>b.addEventListener('click', e=>{ state.logoSize=e.currentTarget.dataset.ls; render() }))
+ document.querySelectorAll('.shapebtn').forEach(b=>b.addEventListener('click', e=>{ state.logoShape=e.currentTarget.dataset.shape; render() }))
+ document.getElementById('opac')?.addEventListener('input', e=>{ state.logoOpacity=parseInt(e.target.value) })
+ document.getElementById('start')?.addEventListener('click', startBroadcast)
+ document.getElementById('liveQ')?.addEventListener('change', async e=>{
+   state.quality=e.target.value
+   const track=refs.display?.getVideoTracks()[0]
+   if(track){ try{ await track.applyConstraints({width:Q[state.quality].w, height:Q[state.quality].h, frameRate:30}) }catch{} }
+ })
+ document.getElementById('copyLink')?.addEventListener('click', async()=>{ await navigator.clipboard.writeText(`${location.origin}${location.pathname}?id=${state.roomId}`); document.getElementById('copyLink').textContent='Copié!' })
+ document.getElementById('copyId')?.addEventListener('click', async()=>{ await navigator.clipboard.writeText(state.roomId) })
+ document.getElementById('stop')?.addEventListener('click', stopAll)
+ // viewer
+ document.getElementById('mute')?.addEventListener('click', ()=>{ if(refs.remote) refs.remote.muted=!refs.remote.muted })
+ document.getElementById('vol')?.addEventListener('input', e=>{ state.vVol=parseFloat(e.target.value); if(refs.remote) refs.remote.volume=state.vVol })
+ document.querySelectorAll('.vqbtn').forEach(b=>b.addEventListener('click', e=>{
+   state.vQuality=e.currentTarget.dataset.vq
+   if(refs.remote){
+     if(state.vQuality==='360p') refs.remote.style.maxWidth='640px'
+     else if(state.vQuality==='720p') refs.remote.style.maxWidth='1280px'
+     else if(state.vQuality==='1080p') refs.remote.style.maxWidth='1920px'
+     else refs.remote.style.maxWidth='100%'
+   }
+   render()
+ }))
+ document.getElementById('fs')?.addEventListener('click', ()=>{ if(!document.fullscreenElement) refs.viewerBox.requestFullscreen(); else document.exitFullscreen() })
+ document.getElementById('pip')?.addEventListener('click', async()=>{ try{ if(document.pictureInPictureElement) await document.exitPictureInPicture(); else await refs.remote.requestPictureInPicture() }catch{} })
+}
+
+async function startBroadcast(){
+ if(state.status==='requesting') return
+ state.status='requesting'; state.error=''; render()
+ try{
+  const stream=await navigator.mediaDevices.getDisplayMedia({video:{width:{ideal:Q[state.quality].w}, height:{ideal:Q[state.quality].h}, frameRate:{ideal:30,max:30}, cursor:'always'}, audio: state.sys})
+  refs.display=stream
+  state.status='live'; state.roomId=genId()
+  render()
+  setTimeout(()=>{ if(refs.preview){ refs.preview.srcObject=stream; refs.preview.muted=true; refs.preview.play().catch(()=>{}) } }, 200)
+
+  let micStream=null
+  if(state.mic){ try{ micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}}) }catch(e){console.warn(e)} }
+
+  let finalStream
+  let audioTracks=[]
+  if(stream.getAudioTracks().length>0 || micStream){
+    if(stream.getAudioTracks().length>0 && micStream){
+      try{
+        const ctx=new (window.AudioContext||window.webkitAudioContext)(); refs.audioCtx=ctx
+        const dest=ctx.createMediaStreamDestination()
+        const s1=ctx.createMediaStreamSource(stream); s1.connect(dest)
+        const s2=ctx.createMediaStreamSource(micStream); const g=ctx.createGain(); g.gain.value=1.1; s2.connect(g).connect(dest)
+        audioTracks=dest.stream.getAudioTracks()
+      }catch{ audioTracks=[...stream.getAudioTracks(), ...micStream.getAudioTracks()] }
+    } else if(micStream){ audioTracks=[...stream.getAudioTracks(), ...micStream.getAudioTracks()] }
+    else audioTracks=stream.getAudioTracks()
+  }
+
+  // Canvas burn logo + watermark
+  if(state.logoSrc || state.watermark){
+    const canvas=refs.canvas
+    const ctx=canvas.getContext('2d', {alpha:false})
+    const vTrack=stream.getVideoTracks()[0]
+    const settings=vTrack.getSettings()
+    const w=settings.width||1920, h=settings.height||1080
+    canvas.width=w; canvas.height=h
+    const hidden=document.createElement('video'); hidden.srcObject=stream; hidden.muted=true; hidden.play()
+    const logoImg=new Image(); if(state.logoSrc) logoImg.src=state.logoSrc
+    refs.logoImg=logoImg
+
+    const draw=()=>{
+      if(state.status!=='live') return
+      if(hidden.readyState>=2) ctx.drawImage(hidden,0,0,w,h)
+      else { ctx.fillStyle='#000'; ctx.fillRect(0,0,w,h) }
+      if(state.overlay==='rouge'){ const g=ctx.createLinearGradient(0,h*0.6,0,h); g.addColorStop(0,'rgba(0,0,0,0)'); g.addColorStop(1,'rgba(127,20,20,0.25)'); ctx.fillStyle=g; ctx.fillRect(0,0,w,h) }
+      if(state.watermark){ ctx.font=`700 ${Math.round(w*0.03)}px Inter`; ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.shadowColor='rgba(255,0,0,0.8)'; ctx.shadowBlur=16; ctx.fillText(state.watermark.toUpperCase(), 40, h-50); ctx.shadowBlur=0 }
+      if(state.logoSrc && logoImg.complete){
+        const sizeMap={S:w*0.06,M:w*0.09,L:w*0.13}; const ls=sizeMap[state.logoSize]; const pad=20+w*0.015; const x=w-ls-pad, y=h-ls-pad-(state.watermark?40:0)
+        ctx.globalAlpha=state.logoOpacity/100
+        if(state.logoShape==='round'){ ctx.save(); ctx.beginPath(); ctx.arc(x+ls/2,y+ls/2,ls/2,0,Math.PI*2); ctx.clip(); ctx.drawImage(logoImg,x,y,ls,ls); ctx.restore(); ctx.strokeStyle='rgba(255,26,26,0.6)'; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(x+ls/2,y+ls/2,ls/2,0,Math.PI*2); ctx.stroke() }
+        else { ctx.drawImage(logoImg,x,y,ls,ls) }
+        ctx.globalAlpha=1
+      }
+      refs.raf=requestAnimationFrame(draw)
+    }
+    draw()
+    const canvasStream=canvas.captureStream(30)
+    finalStream=new MediaStream([canvasStream.getVideoTracks()[0], ...audioTracks])
+  } else {
+    finalStream=new MediaStream([stream.getVideoTracks()[0], ...audioTracks])
+  }
+  finalStream.getVideoTracks().forEach(t=>{ try{t.contentHint='detail'}catch{} })
+  refs.final=finalStream
+
+  const peer=new Peer(state.roomId, {config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}]}})
+  refs.peer=peer
+  peer.on('open', ()=>{ console.log('peer open', state.roomId) })
+  peer.on('connection', conn=>{ conn.on('open', ()=>{ try{ const call=peer.call(conn.peer, finalStream); refs.calls.set(conn.peer,call); state.viewers=[...state.viewers, {id:conn.peer}]; render() }catch{} }) })
+  peer.on('call', call=>{ call.answer(finalStream); state.viewers=[...state.viewers, {id:call.peer}]; render() })
+  stream.getVideoTracks()[0].onended=()=>stopAll()
+
+ }catch(err){
+  console.error(err)
+  state.error=err.name==='NotAllowedError'?'Partage refusé':err.message
+  state.status='idle'; render()
+ }
+}
+
+function stopAll(){
+ try{ cancelAnimationFrame(refs.raf) }catch{}
+ try{ refs.display?.getTracks().forEach(t=>t.stop()) }catch{}
+ try{ refs.audioCtx?.close() }catch{}
+ try{ refs.peer?.destroy() }catch{}
+ refs.display=null; refs.final=null; refs.peer=null; refs.calls.clear()
+ state.status='idle'; state.roomId=''; state.viewers=[]; render()
+}
+
+async function initViewer(){
+ if(!isViewer) return
+ try{
+  const peer=new Peer({config:{iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}]}})
+  peer.on('open', ()=>{
+    const conn=peer.connect(ROOM)
+    conn.on('open', ()=>{
+      state.vStatus='En attente du flux...'; render()
+      const dummy=new MediaStream()
+      const call=peer.call(ROOM, dummy)
+      call.on('stream', remote=>{
+        state.remoteStream=remote; state.vStatus='connected'
+        const vt=remote.getVideoTracks()[0]; if(vt){ const s=vt.getSettings(); state.vRes={w:s.width||0,h:s.height||0} }
+        render()
+      })
+      call.on('close', ()=>{ state.vStatus='terminé'; render() })
+    })
+    conn.on('error', ()=>{ state.vStatus='introuvable'; render() })
+  })
+  peer.on('call', call=>{
+    call.answer(new MediaStream())
+    call.on('stream', remote=>{ state.remoteStream=remote; state.vStatus='connected'; render() })
+  })
+  peer.on('error', err=>{ if(err.type==='peer-unavailable'){ state.vStatus='introuvable'; render() } })
+ }catch(e){ state.vStatus='error'; render() }
+}
+
+render()
+if(isViewer) initViewer()
+</script>
+</body>
+</html>
